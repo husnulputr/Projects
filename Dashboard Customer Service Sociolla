@@ -1,0 +1,1025 @@
+# Load required libraries
+library(shiny)
+library(bs4Dash)
+library(plotly)
+library(DT)
+library(lubridate)
+library(dplyr)
+library(bslib)
+library(tidyr)
+library(thematic)
+library(ggplot2)
+library(shinyWidgets)
+library(RColorBrewer)
+library(bslib)
+
+
+# Load Data dari CSV
+data_keluhan <- tryCatch({
+  read.csv("data_keluhan_dnd.csv")
+}, error = function(e) {
+  # Jika gagal load, tampilkan pesan error dan gunakan data dummy sebagai pengganti
+  message("Gagal memuat data: ", e)
+  NULL   
+})
+
+
+# Fungsi untuk melakukan analisis sentimen sederhana berdasarkan teks keluhan
+analisis_sentimen <- function(text) {
+  if (grepl("luar biasa|cepat|aman|menyenangkan|baik|berguna|puas|bagus", text, ignore.case = TRUE)) {
+    return("Positif")
+  } else if (grepl("kecewa|mahal|tidak puas|buruk|rusak", text, ignore.case = TRUE)) {
+    return("Negatif")
+  } else {
+    return("Netral")
+  }
+}
+
+# Asumsi: Rating_CSAT di atas 3 dianggap positif, 3 ke bawah negatif
+data_keluhan <- data_keluhan %>%
+  mutate(Sentimen_Rating = ifelse(Rating_CSAT > 3, "Positif", "Negatif"))
+
+# Menyiapkan data untuk visualisasi sentiment_data
+sentiment_data <- data_keluhan %>%
+  group_by(Produk_Terkait, Sentimen_Rating) %>%
+  summarise(Jumlah = n(), .groups = 'drop')
+
+# Melakukan segmentasi berdasarkan Segmentasi_Wilayah dan Sentimen_Rating
+data_segmentasi <- data_keluhan %>%
+  group_by(Segmentasi_Wilayah, Sentimen_Rating) %>%
+  summarise(Jumlah = n(), .groups = 'drop')
+
+col_name <- "Waktu_Respon"  # Ganti dengan nama kolom waktu respon yang benar
+
+# Cek apakah nama kolom sesuai dengan yang ada di data
+if (!(col_name %in% names(data_keluhan))) {
+  stop(paste("Kolom", col_name, "tidak ditemukan dalam data!"))
+}
+
+# Konversi kolom waktu respon ke tipe numerik
+data_keluhan[[col_name]] <- as.numeric(as.character(data_keluhan[[col_name]]))
+
+# Cek apakah ada nilai NA setelah konversi
+if (sum(is.na(data_keluhan[[col_name]])) > 0) {
+  warning("Ada nilai yang tidak bisa dikonversi ke numerik dan akan dihapus.")
+}
+
+# Buang baris dengan nilai NA
+data_keluhan <- data_keluhan %>%
+  filter(!is.na(.data[[col_name]]))  # Buang baris dengan ResponseTime yang tidak valid
+
+# Buat interval waktu respon untuk 1-6 Jam dan 6-12 Jam
+data_keluhan <- data_keluhan %>%
+  mutate(Interval_Response = cut(.data[[col_name]], 
+                                 breaks = c(0, 1, 6, 12, Inf), 
+                                 labels = c("< 1 Jam", "1-6 Jam", "6-12 Jam", "> 12 Jam")))
+
+header <- dashboardHeader(
+  skin = "light",
+  status = "black",
+  
+  # Notifikasi yang sudah ada
+  tags$li(
+    class = "nav-item dropdown",
+    style = "position: absolute; left: 33px; margin-top: -22px;",
+    tags$a(
+      href = "#", class = "nav-link notification-icon", `data-toggle` = "dropdown",
+      icon("bell"), tags$span(class = "badge badge-danger navbar-badge", textOutput("notification_count"))
+    ),
+    tags$div(
+      class = "dropdown-menu dropdown-menu-left notification-dropdown",
+      style = "width: 500px; max-height: 300px; overflow-y: auto; white-space: normal;",
+      uiOutput("notification_items")
+    ),
+  )
+)
+
+
+# Sidebar
+sidebar <- dashboardSidebar(
+  skin = "light",
+  tags$div(
+    class = "sidebar-profile",
+    style = "text-align: center; padding: 10px 3px;",
+    tags$img(
+      src = "https://berita.99.co/wp-content/uploads/2023/07/tugas-customer-service.jpg",
+      class = "profile-pic-sidebar",
+      style = "margin-bottom: 10px;"  # Menambahkan jarak antara gambar dan nama pengguna
+    ),
+    tags$h4("Agen 1", class = "profile-name", style = "color: #333333; font-size: 16px; margin: 0;")  # Mengubah ukuran font dan margin nama pengguna
+  ),
+  
+  sidebarMenu(
+    menuItem("Overview", tabName = "overview", icon = icon("dashboard")),
+    menuItem("Complaints Analytics", tabName = "complaints_analytics", icon = icon("chart-bar")),
+    menuItem("SLA Monitoring", tabName = "sla_monitoring", icon = icon("stopwatch")),
+    menuItem("Agent Performance", tabName = "agent_performance", icon = icon("user-tie")),
+    menuItem("Channel Analysis", tabName = "channel_analysis", icon = icon("comments")),
+    menuItem("Sentiment Analysis", tabName = "sentiment_analysis", icon = icon("smile")),
+    menuItem("Region Segmentation", tabName = "region_segmentation", icon = icon("map-marked-alt")),
+    menuItem("Response Analytics", tabName = "response_analytics", icon = icon("chart-pie"))
+  )
+)
+
+# Body dengan CSS Custom yang lebih rapi dan terstruktur
+body <- dashboardBody(
+  tags$head(
+    tags$style(HTML("
+      body {
+        background-color: #fce4ec;
+      }
+      /* CSS untuk gambar profil bulat di sidebar */
+      .profile-pic-sidebar {
+        width: 53px;  /* Mengubah ukuran gambar agar lebih proporsional */
+        height: 53px;
+        border-radius: 50%;
+        object-fit: cover;
+        border: 2px solid #333333;
+        transition: width 0.3s, height 0.3s;
+      }
+      
+      /* CSS saat sidebar ditutup */
+      .sidebar-closed .profile-pic-sidebar {
+        width: 10px;
+        height: 10px;
+      }
+      .sidebar-closed .profile-name {
+        display: none;
+      }
+
+      .profile-name {
+        font-size: 13px;  /* Mengubah ukuran font nama */
+        font-weight: bold;
+        color: #333333;
+        transition: opacity 0.3s;
+      }
+      
+      /* Box styling untuk background dan shadow */
+      .box {
+        background-color: #f8bbd0;
+        border-radius: 10px;
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+      }
+      
+      /* Warna gradasi untuk welcome box */
+      .welcome-box {
+        background: linear-gradient(to right, #f48fb1, #f8bbd0);
+        color: #ffffff;
+        border-radius: 10px;
+        padding: 20px;
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+      }
+      /* CSS untuk warna navbar agar sama dengan sidebar */
+        .navbar {
+          background-color: #f8bbd0 !important; /* Sesuaikan dengan warna sidebar */
+        }
+
+      /* Warna latar sidebar */
+      .main-sidebar {
+        background-color: #f8bbd0 !important;
+        color: #333333 !important;
+      }
+      
+      /* Warna teks dan dropdown pada dark mode */
+      body.dark-mode .main-sidebar, 
+      body.dark-mode .main-sidebar .nav-link {
+        color: #000000 !important;
+      }
+      body.dark-mode .dropdown-menu {
+        background-color: #333333;
+        color: #e0e0e0;
+      }
+      body.dark-mode .dropdown-item {
+        border-bottom: 1px solid #555;
+        color: #e0e0e0;
+      }
+
+      /* Ganti warna box untuk tema */
+      .small-box.bg-pink { background-color: #FCD2D9 !important; color: #000 !important; }
+      .small-box.bg-purple { background-color: #E5C5F1 !important; color: #000 !important; }
+      .small-box.bg-lightblue { background-color: #E1EBFF !important; color: #000 !important; }
+      
+      /* Warna teks valueBox */
+      .bg-lightblue .small-box h3, .bg-lightblue .small-box p {
+        color: #000000 !important;
+      }
+    ")),
+    
+    tags$script(HTML("
+      $(document).on('shiny:connected', function() {
+        var body = $('body');
+        
+        // Pantau klik pada tombol toggle sidebar
+        $('.main-header .sidebar-toggle').on('click', function() {
+          setTimeout(function() {
+            if (body.hasClass('sidebar-collapse')) {
+              body.addClass('sidebar-closed');
+            } else {
+              body.removeClass('sidebar-closed');
+            }
+          }, 300);
+        });
+      });
+    "))
+  ),
+  
+  tabItems(
+    tabItem(
+      tabName = "overview",
+      fluidRow(
+        box(
+          title = "Welcome!",
+          status = "pink",
+          elevation = 4,
+          solidHeader = TRUE,
+          width = 12,
+          align = "center",
+          div(class = "welcome-box",
+              span(class="welcome-icon", icon("smile-wink")),
+              "Selamat datang di dashboard customer service! Gunakan menu di samping untuk navigasi."
+          )
+        )
+      ),
+      fluidRow(
+        valueBoxOutput("total_keluhan_box", width = 4),
+        valueBoxOutput("penyelesaian_keluhan_box", width = 4),
+        valueBoxOutput("waktu_respon_box", width = 4)
+      ),
+      fluidRow(
+        valueBoxOutput("sla_compliance_box", width = 4),
+        valueBoxOutput("csat_score_box", width = 4),
+        valueBoxOutput("nps_score_box", width = 4)
+      ),
+      fluidRow(
+        box(
+          title = "Grafik Tren Keluhan Bulanan per Kategori",
+          status = "pink",
+          elevation = 4,
+          plotlyOutput("grafik_tren_keluhan"),
+          width = 12
+        )
+      )
+    ),
+    
+    # Tab 2: Complaints Analytics
+    tabItem(
+      tabName = "complaints_analytics",
+      fluidRow(
+        box(
+          title = "Distribusi Kategori Keluhan",
+          status = "pink",
+          elevation = 4,
+          plotlyOutput("pie_chart_keluhan"),
+          width = 6
+        ),
+        box(
+          title = "Frekuensi Keluhan per Produk",
+          status = "pink",
+          elevation = 4,
+          plotlyOutput("bar_chart_produk"),
+          width = 6
+        )
+      ),
+      fluidRow(
+        box(
+          title = "Tabel Keluhan",
+          status = "pink",
+          elevation = 4,
+          uiOutput("summary_report"),
+          width = 12
+        ),
+        downloadButton("download_report", "Download Report")
+      )
+    ),
+    
+    # Tab 3: SLA Monitoring
+    tabItem(
+      tabName = "sla_monitoring",
+      fluidRow(
+        box(
+          title = "Keluhan yang Hampir Melewati SLA",
+          status = "pink",
+          elevation = 4,
+          solidHeader = TRUE,
+          dataTableOutput("keluhan_hampir_sla"),
+          width = 12
+        ),
+        box(
+          title = "Grafik SLA per Kategori Keluhan",
+          status = "pink",
+          elevation = 4,
+          plotOutput("grafik_sla_kategori"),
+          width = 12
+        )
+      )
+    ),
+    
+    # Tab 4: Agent Performance (Gabungan Data Lama dan Baru)
+    tabItem(
+      tabName = "agent_performance",
+      fluidRow(
+        # Value box for average resolution time
+        valueBoxOutput("avg_resolution_time", width = 12)
+      ),
+      
+      fluidRow(
+        # Bar chart for number of complaints handled per agent
+        box(
+          title = "Jumlah Keluhan Ditangani per Agen",
+          status = "pink",
+          elevation = 4,
+          plotlyOutput("bar_chart_keluhan_agen"),
+          width = 6
+        ),
+        box(
+          title = "Diagram Lingkaran Rata-rata CSAT per Agen",
+          status = "pink",
+          elevation = 4,
+          plotlyOutput("pie_chart_csat_per_agent"),
+          width = 6
+        )
+      ),
+      
+      fluidRow(
+        box(
+          title = "Tren NPS Bulanan",
+          status = "pink",
+          elevation = 4,
+          plotlyOutput("monthly_nps_trend"),
+          width = 6
+        ),
+        box(
+          title = "Grafik Agen dengan Keluhan Terselesaikan",
+          status = "pink",
+          elevation = 4,
+          plotlyOutput("grafik_agen_keluhan"),
+          width = 6,
+          class = "box-pink"
+        )
+      )
+    ),
+    
+    # Tab 5: Channel Analysis
+    tabItem(
+      tabName = "channel_analysis",
+      fluidRow(
+        box(
+          title = "Distribusi Keluhan berdasarkan Saluran",
+          status = "pink",
+          elevation = 4,
+          plotlyOutput("pie_chart_channel"),
+          width = 6
+        ),
+        box(
+          title = "Waktu Respon per Saluran",
+          status = "pink",
+          elevation = 4,
+          plotOutput("heatmap_response_time"),
+          width = 6
+        )
+      ),
+      fluidRow(
+        box(
+          title = "Efisiensi Penyelesaian per Saluran",
+          status = "pink",
+          elevation = 4,
+          plotlyOutput("efficiency_per_channel"),
+          width = 12
+        )
+      )
+    ),
+    
+    # Tab 6: Analisis Sentimen
+    tabItem(
+      tabName = "sentiment_analysis",
+      fluidRow(
+        box(
+          title = "Sentiment Comparison per Product",
+          status = "pink",
+          elevation = 4,
+          width = 12,
+          plotlyOutput("sentiment_plot")
+        ),
+        box(
+          title = "Detailed Sentiment Data",
+          status = "pink",
+          elevation = 4,
+          width = 12,
+          DTOutput("sentiment_table")
+        ),
+        box(
+          title = "Analisis Tren Sentimen Waktu",
+          status = "pink",
+          elevation = 4,
+          width = 12,
+          plotlyOutput("trend_sentiment_plot")
+        )
+      )
+    ),
+    
+    # Tab untuk Segmentasi Wilayah
+    tabItem(
+      tabName = "region_segmentation",
+      fluidRow(
+        box(
+          title = "Pilih Wilayah",
+          status = "pink",
+          elevation = 4,
+          width = 12,
+          selectInput("wilayah", "Pilih Wilayah:", choices = unique(data_segmentasi$Segmentasi_Wilayah), selected = NULL, multiple = TRUE)
+        ),
+        box(
+          title = "Segmentasi Sentimen Berdasarkan Wilayah",
+          status = "pink",
+          elevation = 4,
+          width = 12,
+          plotlyOutput("plotSentimen")
+        )
+      )
+    ),
+    # Tab 7: Response Analytics
+    tabItem(
+      tabName = "response_analytics",
+      fluidRow(
+        box(
+          title = "Distribusi Waktu Respon",
+          status = "pink",
+          elevation = 4,
+          plotlyOutput("response_time_distribution"),
+          width = 6
+        ),
+        box(
+          title = "Analitik Waktu Respon",
+          status = "pink",
+          elevation = 4,
+          plotOutput("circlePlot"),
+          width = 6
+        )
+      )
+    )
+  ) # Tutup tabItems
+) # Tutup dashboardBody
+
+
+# UI
+ui <- dashboardPage(
+  header = header,
+  sidebar = sidebar,
+  body = body,
+  title = "Dashboard kinerja"
+)
+
+# Server
+server <- function(input, output, session) {
+  
+  # Data keluhan yang diolah dalam reactive expression
+  complaints_data <- reactive({
+    data <- data_keluhan
+    data$Tanggal <- as.Date(data$Tanggal)
+    data$Bulan <- factor(format(data$Tanggal, "%B"), levels = month.name)
+    data$Batas_SLA <- data$Tanggal + 3
+    data$SLA_Compliant <- ifelse(data$Status_Keluhan == "Selesai" & data$Tanggal <= data$Batas_SLA, 1, 0)
+    data
+  })
+  
+  # Data notifikasi dengan waktu relatif
+  notification_data <- reactiveVal(data.frame(
+    message = c(
+      "Kamu punya 5 keluhan yang belum diselesaikan.",
+      "Ada 2 keluhan prioritas tinggi yang perlu segera ditangani.",
+      "Kamu belum memberikan tanggapan terhadap 3 keluhan terbaru."
+    ),
+    date = Sys.time() - c(600, 1800, 3600)  # Contoh: 10 menit, 30 menit, dan 1 jam yang lalu
+  ))
+  
+  # Fungsi untuk format waktu relatif
+  format_time_relative <- function(time) {
+    diff <- difftime(Sys.time(), time, units = "mins")
+    mins <- as.numeric(diff)
+    
+    if (mins < 1) {
+      return("Baru saja")
+    } else if (mins < 60) {
+      return(paste(round(mins), "menit yang lalu"))
+    } else {
+      hours <- floor(mins / 60)
+      return(paste(hours, "jam yang lalu"))
+    }
+  }
+  
+  output$notification_count <- renderText({
+    nrow(notification_data())
+  })
+  
+  output$notification_items <- renderUI({
+    notifications <- notification_data()
+    
+    if (nrow(notifications) == 0) {
+      return(tags$div("Tidak ada notifikasi baru."))
+    }
+    
+    tagList(
+      lapply(1:nrow(notifications), function(i) {
+        tags$div(
+          class = "dropdown-item",
+          tags$p(
+            tags$strong(notifications$message[i]),
+            tags$span(class = "float-right text-muted text-sm", format_time_relative(notifications$date[i]))
+          )
+        )
+      })
+    )
+  })
+  
+  
+  
+  # Debugging untuk jumlah data
+  output$debug <- renderText({
+    paste("Data rows:", nrow(complaints_data()), "Columns:", ncol(complaints_data()))
+  })
+  
+  # Overview: Value Boxes
+  observe({
+    # Summary Data untuk Value Boxes
+    total_keluhan <- nrow(complaints_data())
+    rata2_penyelesaian_keluhan <- mean(complaints_data()$Persentase_Penyelesaian, na.rm = TRUE)
+    rata2_waktu_respon <- mean(complaints_data()$Waktu_Respon, na.rm = TRUE)
+    sla_compliance <- round(mean(complaints_data()$SLA_Compliant, na.rm = TRUE) * 100, 2)
+    rata2_csat <- mean(complaints_data()$Rating_CSAT, na.rm = TRUE)
+    rata2_nps <- mean(complaints_data()$NPS_Score, na.rm = TRUE)
+    
+    # Value Boxes
+    output$total_keluhan_box <- renderValueBox({
+      valueBox(value = total_keluhan, subtitle = "Total Keluhan", color = "pink", icon = icon("exclamation-triangle"))
+    })
+    
+    output$penyelesaian_keluhan_box <- renderValueBox({
+      valueBox(value = paste0(round(rata2_penyelesaian_keluhan * 100), "%"), subtitle = "Tingkat Penyelesaian", color = "lightblue", icon = icon("check-circle"))
+    })
+    
+    output$waktu_respon_box <- renderValueBox({
+      valueBox(value = round(rata2_waktu_respon, 2), subtitle = "Waktu Respon Rata-rata (Jam)", color = "purple", icon = icon("clock"))
+    })
+    
+    output$sla_compliance_box <- renderValueBox({
+      valueBox(value = paste0(sla_compliance, "%"), subtitle = "SLA Compliance", color = "pink", icon = icon("thumbs-up"))
+    })
+    
+    output$csat_score_box <- renderValueBox({
+      valueBox(value = round(rata2_csat, 1), subtitle = "CSAT Score", color = "lightblue", icon = icon("smile"))
+    })
+    
+    output$nps_score_box <- renderValueBox({
+      valueBox(value = round(rata2_nps, 1), subtitle = "NPS Score", color = "purple", icon = icon("heart"))
+    })
+  })
+  
+  # Grafik Tren Keluhan Bulanan per Kategori
+  output$grafik_tren_keluhan <- renderPlotly({
+    data_tren <- complaints_data() %>%
+      mutate(Bulan = format(as.Date(Tanggal), "%Y-%m")) %>%
+      group_by(Bulan, Keluhan) %>%
+      summarise(Jumlah_Keluhan = n(), .groups = 'drop') %>%
+      pivot_wider(names_from = Keluhan, values_from = Jumlah_Keluhan, values_fill = 0)
+    
+    plot_ly(data = data_tren, x = ~Bulan, type = 'bar') %>%
+      add_bars(y = ~`Kurir tidak ramah`, name = 'Kurir tidak ramah') %>%
+      add_bars(y = ~`Pengemasan buruk`, name = 'Pengemasan buruk') %>%
+      add_bars(y = ~`Pembayaran bermasalah`, name = 'Pembayaran bermasalah') %>%
+      add_bars(y = ~`Pengiriman lambat`, name = 'Pengiriman lambat') %>%
+      add_bars(y = ~`Layanan pelanggan buruk`, name = 'Layanan pelanggan buruk') %>%
+      add_bars(y = ~`Produk rusak`, name = 'Produk rusak') %>%
+      add_bars(y = ~`Produk tidak sesuai`, name = 'Produk tidak sesuai') %>%
+      add_bars(y = ~`Salah kirim barang`, name = 'Salah kirim barang') %>%
+      add_bars(y = ~`Komunikasi tidak jelas`, name = 'Komunikasi tidak jelas') %>%
+      layout(title = "Grafik Tren Keluhan per Kategori", 
+             xaxis = list(title = "Bulan"), 
+             yaxis = list(title = "Jumlah Keluhan"), 
+             barmode = 'group')
+  })
+  
+  # Pie Chart Keluhan
+  output$pie_chart_keluhan <- renderPlotly({
+    data_pie <- complaints_data() %>%
+      group_by(Keluhan) %>%
+      summarise(Jumlah = n(), .groups = 'drop')
+    
+    # Membuat palet warna pastel
+    warna_pastels <- colorRampPalette(c("#eb88e2", "#f7aef8", "#5f77f2", "#8093f1", "#72ddf7"))(nrow(data_pie))
+    
+    plot_ly(data = data_pie, 
+            labels = ~Keluhan, 
+            values = ~Jumlah, 
+            type = 'pie',
+            marker = list(colors = warna_pastels)) %>%
+      layout(title = "Distribusi Kategori Keluhan")
+  })
+  
+  
+  # Bar Chart - Frekuensi Keluhan per Produk
+  output$bar_chart_produk <- renderPlotly({
+    data_produk <- complaints_data() %>%
+      group_by(Produk_Terkait) %>%
+      summarise(Jumlah_Keluhan = n()) %>%
+      arrange(desc(Jumlah_Keluhan))
+    
+    # Membuat palet warna pastel pink ke ungu
+    warna_pastel <- colorRampPalette(c("#FFC0CB", "#DDA0DD", "#9370DB"))(nrow(data_produk))
+    
+    plot_ly(data = data_produk, 
+            x = ~Produk_Terkait, 
+            y = ~Jumlah_Keluhan, 
+            type = 'bar', 
+            marker = list(color = warna_pastel)) %>%
+      layout(title = "Frekuensi Keluhan per Produk", 
+             xaxis = list(title = "Produk"), 
+             yaxis = list(title = "Jumlah Keluhan"))
+  })
+  
+  
+  # Summary Report Tabel
+  output$summary_report <- renderUI({
+    tags$div(
+      style = "background-color: inherit; color: inherit;",  # Warna mengikuti tema
+      DT::datatable(
+        complaints_data(),
+        options = list(
+          autoWidth = TRUE,
+          scrollX = TRUE,
+          pageLength = 10,
+          dom = 'Bfrtip',
+          buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+          columnDefs = list(list(width = '20%', targets = c(0, 1)))
+        ),
+        caption = "Ringkasan Keluhan",
+        rownames = FALSE,
+        class = "display compact cell-border stripe"  # Tetap mengikuti tampilan awal
+      ),
+      # CSS tambahan khusus untuk dark mode
+      tags$style(HTML("
+      /* Tabel dalam mode dark */
+      body.dark-mode .dataTable {
+        background-color: #2c2c2c !important; /* Latar tabel */
+        color: #e0e0e0 !important; /* Teks tabel */
+      }
+      body.dark-mode .dataTable th, body.dark-mode .dataTable td {
+        color: #e0e0e0 !important; /* Teks header dan sel */
+      }
+      body.dark-mode .dataTables_filter label,
+      body.dark-mode .dataTables_length label,
+      body.dark-mode .dataTables_info {
+        color: #ffffff !important; /* Teks untuk label pencarian, info, dan panjang */
+      }
+      body.dark-mode .dataTable thead th {
+        background-color: #3b3b3b !important; /* Header tabel */
+        color: #ffffff !important;
+      }
+      body.dark-mode .dataTable tfoot th {
+        background-color: #3b3b3b !important; /* Footer tabel */
+        color: #ffffff !important;
+      }
+      body.dark-mode .dataTable .paginate_button {
+        background-color: #444444 !important; /* Tombol pagination */
+        color: #ffffff !important;
+      }
+      body.dark-mode .dataTable .paginate_button:hover {
+        background-color: #555555 !important; /* Hover tombol pagination */
+        color: #ffffff !important;
+      }
+      body.dark-mode .dataTables_filter input {
+        background-color: #444444 !important; /* Latar input search */
+        color: #ffffff !important; /* Teks input search */
+        border: 1px solid #666666;
+      }
+    "))
+    )
+  })
+  
+  # Download Report
+  output$download_report <- downloadHandler(
+    filename = function() {
+      paste("laporan_keluhan_", Sys.Date(), ".csv", sep = "")
+    },
+    content = function(file) {
+      write.csv(complaints_data(), file, row.names = FALSE)
+    }
+  )
+  
+  # Tabel Keluhan Hampir Melewati SLA
+  output$keluhan_hampir_sla <- renderDataTable({
+    hampir_sla <- complaints_data() %>%
+      filter(Status_Keluhan != "Selesai" & Batas_SLA <= Sys.Date() + 3) %>%
+      select(Tanggal, Keluhan, Produk_Terkait, Agen, Batas_SLA)
+    
+    datatable(
+      hampir_sla,
+      options = list(pageLength = 5, dom = 'tip'),
+      caption = "Keluhan yang mendekati SLA"
+    )
+  })
+  
+  # Grafik SLA per Kategori Keluhan dengan ggplot2
+  output$grafik_sla_kategori <- renderPlot({
+    sla_kategori <- complaints_data() %>%
+      group_by(Keluhan) %>%
+      summarise(Percentage_SLA_Compliant = mean(SLA_Compliant, na.rm = TRUE) * 100)
+    
+    ggplot(sla_kategori, aes(x = reorder(Keluhan, -Percentage_SLA_Compliant), y = Percentage_SLA_Compliant)) +
+      geom_bar(stat = "identity", fill = "#9e6fef", color = "#5f71ef", width = 0.7) +
+      geom_text(aes(label = paste0(round(Percentage_SLA_Compliant, 1), "%")), 
+                vjust = -0.5, size = 3.5) +
+      labs(title = "Persentase SLA per Kategori Keluhan", 
+           x = "Kategori Keluhan", 
+           y = "Persentase SLA Compliance") +
+      theme_minimal(base_size = 14) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  })
+  
+  # --- Grafik Jumlah Keluhan Ditangani per Agen ---
+  output$bar_chart_keluhan_agen <- renderPlotly({
+    agen_summary <- data_keluhan %>%
+      group_by(Agen) %>%
+      summarise(Jumlah_Keluhan = n()) %>%
+      arrange(desc(Jumlah_Keluhan))
+    
+    # Warna gradasi pink-ungu-biru
+    warna_gradien <- c("#f098b5", "#BBB7E5", "#f2bce1", "#c79cda", "#8a77c8")
+    
+    # Membuat bar chart dengan warna gradasi
+    plot_ly(data = agen_summary, x = ~Agen, y = ~Jumlah_Keluhan, type = 'bar', 
+            marker = list(color = warna_gradien)) %>%
+      layout(
+        title = "Jumlah Keluhan Ditangani per Agen",
+        xaxis = list(title = "Agen"),
+        yaxis = list(title = "Jumlah Keluhan Ditangani")
+      )
+  })
+  
+  
+  # --- Value Box Rata-rata Waktu Penyelesaian ---
+  avg_resolution_time <- mean(data_keluhan$Waktu_Penyelesaian, na.rm = TRUE)
+  
+  output$avg_resolution_time <- renderValueBox({
+    valueBox(
+      value = paste0(round(avg_resolution_time, 2), " hari"),
+      subtitle = "Rata-rata Waktu Penyelesaian",
+      color = "pink",
+      icon = icon("clock")
+    )
+  })
+  
+  # --- Grafik Agen dengan Keluhan Terselesaikan ---
+  output$grafik_agen_keluhan <- renderPlotly({
+    agen_summary <- data_keluhan %>%
+      filter(Status_Keluhan == "Selesai") %>%
+      group_by(Agen) %>%
+      summarise(Keluhan_Terselesaikan = n()) %>%
+      arrange(desc(Keluhan_Terselesaikan))
+    
+    # Warna gradasi pink-ungu-biru
+    warna_gradien <- c("#BBB7E5", "#8a77c8", "#f098b5","#f2bce1","#c79cda")
+    
+    # Membuat grafik batang dengan warna gradasi
+    plot_ly(
+      data = agen_summary,
+      x = ~Agen,
+      y = ~Keluhan_Terselesaikan,
+      type = 'bar',
+      marker = list(color = warna_gradien) # Menambahkan warna gradasi
+    ) %>%
+      layout(
+        title = "Agen dengan Jumlah Keluhan Terselesaikan",
+        xaxis = list(title = "Agen"),
+        yaxis = list(title = "Jumlah Keluhan Terselesaikan")
+      )
+  })
+  
+  
+  
+  # --- Diagram Lingkaran Rata-rata CSAT per Agen ---
+  output$pie_chart_csat_per_agent <- renderPlotly({
+    # Menghitung rata-rata CSAT per agen
+    csat_per_agent <- data_keluhan %>%
+      group_by(Agen) %>%
+      summarise(Rata_CSAT = mean(Rating_CSAT, na.rm = TRUE))
+    
+    # Warna gradasi pink-ungu-biru
+    warna_gradien <- c("#8a77c8","#f098b5", "#c79cda", "#BBB7E5", "#f2bce1")
+    
+    # Membuat diagram lingkaran
+    plot_ly(
+      data = csat_per_agent,
+      labels = ~Agen,
+      values = ~Rata_CSAT,
+      type = 'pie',
+      textinfo = 'label+percent',
+      insidetextorientation = 'radial',
+      marker = list(colors = warna_gradien) # Menambahkan warna gradasi
+    ) %>%
+      layout(
+        title = "Rata-rata CSAT per Agen",
+        showlegend = TRUE
+      )
+  })
+  
+  
+  # --- Grafik Tren NPS Bulanan ---
+  output$monthly_nps_trend <- renderPlotly({
+    # Mengonversi kolom Tanggal ke format Date agar dapat dikelompokkan per bulan
+    data_keluhan$Tanggal <- as.Date(data_keluhan$Tanggal, format = "%Y/%m/%d %H:%M:%S")
+    
+    # Mengelompokkan data berdasarkan Bulan dan menghitung rata-rata NPS
+    nps_trend <- data_keluhan %>%
+      mutate(Bulan = format(Tanggal, "%Y-%m")) %>%  # Membuat kolom bulan dengan format Tahun-Bulan
+      group_by(Bulan) %>%
+      summarise(Rata_NPS = mean(NPS_Score, na.rm = TRUE)) %>%
+      arrange(Bulan)
+    
+    # Membuat grafik garis dengan gradasi warna pink-ungu-biru
+    plot_ly(
+      data = nps_trend,
+      x = ~Bulan,
+      y = ~Rata_NPS,
+      type = 'scatter',
+      mode = 'lines+markers',
+      line = list(color = "#8a77c8", width = 2),  # Menggunakan warna gradasi pink-ungu-biru
+      marker = list(color = "#8a77c8", size = 8)  # Warna marker juga disesuaikan
+    ) %>%
+      layout(
+        title = "Tren NPS Bulanan",
+        xaxis = list(title = "Bulan", type = 'category'),  # Mengatur x-axis agar terbaca sebagai kategori
+        yaxis = list(title = "Rata-rata NPS"),
+        hovermode = 'closest'
+      )
+  })
+  
+  
+  
+  # --- Analisis Saluran (Channel Analysis) ---
+  # Pie chart untuk distribusi keluhan berdasarkan saluran
+  output$pie_chart_channel <- renderPlotly({
+    data_channel <- data_keluhan %>%
+      group_by(Saluran) %>%
+      summarise(Jumlah_Keluhan = n())
+    
+    # Menggunakan warna gradien pink dan ungu-biru
+    warna_gradien <- c("#bdb9f6", "#BDE0FE","#FFC8DD","#CBD5F7")
+    
+    plot_ly(data = data_channel, labels = ~Saluran, values = ~Jumlah_Keluhan, type = 'pie',
+            marker = list(colors = warna_gradien)) %>%
+      layout(title = "Distribusi Keluhan berdasarkan Saluran")
+  })
+  
+  
+  # Bar chart waktu respon per saluran
+  output$heatmap_response_time <- renderPlot({
+    data_response <- data_keluhan %>%
+      group_by(Saluran) %>%
+      summarise(Rata_Waktu_Respon = mean(Waktu_Respon, na.rm = TRUE))
+    
+    ggplot(data_response, aes(x = Saluran, y = "Waktu Respon", fill = Rata_Waktu_Respon)) +
+      geom_tile(color = "white") +
+      scale_fill_gradientn(colors = c("#FFC8DD", "#BDE0FE", "#CBD5F7", "#bdb9f6")) +  # Menggunakan gradien warna
+      labs(
+        title = "Heatmap Rata-rata Waktu Respon per Saluran",
+        x = "Saluran",
+        y = "",  
+        fill = "Waktu Respon (jam)"
+      ) +
+      theme_minimal(base_size = 14) +
+      theme(axis.text.y = element_blank())
+  })
+  
+  
+  
+  # Grafik efisiensi penyelesaian per saluran
+  output$efficiency_per_channel <- renderPlotly({
+    data_efficiency <- data_keluhan %>%
+      group_by(Saluran) %>%
+      summarise(Efisiensi = mean(Persentase_Penyelesaian, na.rm = TRUE))
+    
+    # Menggunakan warna gradien pink-ungu-biru
+    warna_gradien <- c("#bdb9f6", "#BDE0FE", "#FFC8DD", "#CBD5F7")
+    
+    plot_ly(data = data_efficiency, x = ~Saluran, y = ~Efisiensi, type = 'bar',
+            marker = list(color = warna_gradien)) %>%
+      layout(title = "Efisiensi Penyelesaian per Saluran",
+             xaxis = list(title = "Saluran"),
+             yaxis = list(title = "Persentase Penyelesaian (%)"))
+  })
+  
+  
+  #Sentimen Analisis
+  #sentimen per produk berdasarkan rating CSAT
+  output$sentiment_plot <- renderPlotly({
+    ggplot(sentiment_data, aes(x = Produk_Terkait, y = Jumlah, fill = Sentimen_Rating)) +
+      geom_bar(stat = "identity", position = "dodge") +
+      labs(title = "Perbandingan Sentimen per Produk (Rating CSAT)",
+           x = "Produk Terkait", y = "Jumlah Feedback") +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+      scale_fill_manual(values = c("Positif" = "#9992E0", "Negatif" = "#FF9DF0"))
+  })
+  
+  # Output untuk tabel detail sentimen per produk
+  output$sentiment_table <- renderDT({
+    datatable(sentiment_data)
+  })
+  
+  # Analisis Tren Sentimen Waktu menggunakan Plotly
+  output$trend_sentiment_plot <- renderPlotly({
+    library(dplyr)
+    library(lubridate)
+    library(plotly)
+    
+    # Mengubah kolom Tanggal ke format Date jika belum
+    data_keluhan$Tanggal <- as.Date(data_keluhan$Tanggal, format = "%Y/%m/%d %H:%M:%S")
+    
+    # Menambahkan kolom Bulan untuk analisis waktu
+    data_keluhan <- data_keluhan %>%
+      mutate(Bulan = floor_date(Tanggal, "month")) %>%
+      mutate(Sentimen = ifelse(Komentar == "positif", "Positif", "Negatif"))
+    
+    # Menghitung jumlah sentimen per bulan
+    data_tren_sentimen <- data_keluhan %>%
+      group_by(Bulan, Sentimen) %>%
+      summarise(Jumlah = n(), .groups = "drop")
+    
+    # Plot menggunakan Plotly
+    plot_ly(data_tren_sentimen, x = ~Bulan, y = ~Jumlah, color = ~Sentimen, colors = c("Positif" = "#ca9ae4", "Negatif" = "#ff9df0"), 
+            type = 'scatter', mode = 'lines+markers', hoverinfo = 'text',
+            text = ~paste("Bulan:", format(Bulan, "%b %Y"), "<br>Sentimen:", Sentimen, "<br>Jumlah:", Jumlah)) %>%
+      layout(
+        title = "Tren Sentimen Pelanggan per Bulan",
+        xaxis = list(title = "Bulan", tickformat = "%b %Y"),
+        yaxis = list(title = "Jumlah Sentimen"),
+        hovermode = 'closest'
+      )
+  })
+  
+  
+  # Data reaktif untuk segmentasi wilayah
+  data_reaktif <- reactive({
+    if (is.null(input$wilayah)) {
+      data_segmentasi
+    } else {
+      data_segmentasi %>% filter(Segmentasi_Wilayah %in% input$wilayah)
+    }
+  })
+  
+  # Output untuk plot segmentasi sentimen berdasarkan wilayah
+  output$plotSentimen <- renderPlotly({
+    ggplotly(ggplot(data_reaktif(), aes(x = Segmentasi_Wilayah, y = Jumlah, fill = Sentimen_Rating)) +
+               geom_bar(stat = "identity", position = "dodge") +
+               scale_fill_manual(values = c("Positif" = "#FF9DF0", "Negatif" = "#9992E0"))+
+               theme_minimal() +
+               labs(title = "Segmentasi Sentimen Berdasarkan Wilayah",
+                    x = "Wilayah", y = "Jumlah"))
+    
+  })
+  
+  output$response_time_distribution <- renderPlotly({
+    # Membuat bin interval untuk Waktu Respon
+    data_response_time <- complaints_data() %>%
+      mutate(Interval_Waktu_Respon = cut(Waktu_Respon, breaks = seq(0, max(Waktu_Respon, na.rm = TRUE), by = 1), include.lowest = TRUE))
+    
+    # Hitung distribusi berdasarkan interval waktu respon
+    response_distribution <- data_response_time %>%
+      group_by(Interval_Waktu_Respon) %>%
+      summarise(Jumlah = n(), .groups = 'drop')
+    
+    # Mengatur warna gradasi pink, ungu, biru
+    warna_gradien <- c("#BBB7E5", "#F7DFDF", "#DBEEF7", "#ECAAC2", "#93AECA")
+    
+    # Plot lingkaran untuk distribusi waktu respon
+    plot_ly(
+      data = response_distribution,
+      labels = ~Interval_Waktu_Respon,
+      values = ~Jumlah,
+      type = 'pie',
+      textinfo = 'label+percent',
+      hoverinfo = 'label+value+percent',
+      marker = list(colors = warna_gradien)
+    ) %>%
+      layout(title = "Distribusi Waktu Respon dalam Interval")
+  })
+  
+  #Analitik Waktu Respon
+  output$circlePlot <- renderPlot({
+    response_distribution <- data_keluhan %>%
+      group_by(Interval_Response) %>%
+      summarise(Jumlah = n())
+    
+    # Buat pie chart dengan warna pink dan ungu
+    ggplot(response_distribution, aes(x = "", y = Jumlah, fill = Interval_Response)) +
+      geom_bar(stat = "identity", width = 1) +
+      coord_polar("y", start = 0) +
+      theme_void() +
+      labs(title = "Distribusi Waktu Respon", fill = "Interval Waktu Respon") +
+      scale_fill_manual(values = c("#ECAAC2", "#DBEEF7", "#ECAAC2", "#DBEEF7"))
+  })
+  
+}
+
+# Jalankan aplikasi
+shinyApp(ui = ui, server = server)
