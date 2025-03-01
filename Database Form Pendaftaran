@@ -1,0 +1,38 @@
+import tkinter as tk
+from tkinter import messagebox
+
+def submit():
+    nama_mahasiswa = entry_nama.get()
+    nim_mahasiswa = entry_nim.get()
+    pilihan_prodi = menu_prodi_var.get()
+    prodi_mahasiswa = daftar_prodi[pilihan_prodi]
+    
+    messagebox.showinfo("Data Mahasiswa Baru", f"Nama: {nama_mahasiswa}\nNIM: {nim_mahasiswa}\nProgram Studi: {prodi_mahasiswa}")
+
+#Daftar Prodi
+daftar_prodi = ["Kedokteran Gigi", "Hukum", "Hukum Administrasi Negara", "Manajemen", "Akuntansi"]
+
+#Membuat GUI
+root = tk.Tk()
+root.title("Pendaftaran Mahasiswa Baru")
+
+label_nama = tk.Label(root, text="Nama:")
+label_nama.grid(row=0, column=0, padx=5, pady=5, sticky="w")
+entry_nama = tk.Entry(root)
+entry_nama.grid(row=0, column=1, padx=5, pady=5)
+
+label_nim = tk.Label(root, text="NIM:")
+label_nim.grid(row=1, column=0, padx=5, pady=5, sticky="w")
+entry_nim = tk.Entry(root)
+entry_nim.grid(row=1, column=1, padx=5, pady=5)
+
+label_prodi = tk.Label(root, text="Program Studi:")
+label_prodi.grid(row=2, column=0, padx=5, pady=5, sticky="w")
+menu_prodi_var = tk.IntVar()
+for i, prodi in enumerate(daftar_prodi):
+    tk.Radiobutton(root, text=prodi, variable=menu_prodi_var, value=i).grid(row=i+3, column=1, padx=5, pady=5, sticky="w")
+
+submit_button = tk.Button(root, text="Submit", command=submit)
+submit_button.grid(row=len(daftar_prodi)+3, columnspan=2, padx=5, pady=10)
+
+root.mainloop()
